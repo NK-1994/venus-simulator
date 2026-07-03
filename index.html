@@ -1,0 +1,590 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>金星の見え方シミュレーター</title>
+<style>
+  :root{
+    --ink:#eef2ff;
+    --dim:#9aa7c7;
+    --panel:rgba(8,12,30,.82);
+    --line:rgba(150,170,220,.35);
+    --venus:#ffe9b8;
+    --accent:#ffd166;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+  html,body{margin:0; height:100%; overflow:hidden; background:#05070f;
+    font-family:"Hiragino Kaku Gothic ProN","Hiragino Sans","Yu Gothic UI","Yu Gothic",system-ui,sans-serif;
+    color:var(--ink);}
+  #main{position:fixed; inset:0; width:100%; height:100%; display:block; touch-action:none;}
+
+  /* --- 左上：地球から見た金星（のぞき窓） --- */
+  #inset{
+    position:fixed; top:12px; left:12px; z-index:10;
+    background:var(--panel); border:1px solid var(--line); border-radius:16px;
+    padding:10px 12px 8px; backdrop-filter:blur(4px); -webkit-backdrop-filter:blur(4px);
+    text-align:center; pointer-events:none;
+  }
+  #inset .t{font-size:13px; font-weight:700; letter-spacing:.06em; margin-bottom:6px;}
+  #phase{display:block; width:150px; height:150px; border-radius:50%;
+    background:radial-gradient(circle at 50% 45%, #0b1230 0%, #04060f 75%);
+    border:2px solid rgba(180,200,255,.35);
+    box-shadow:0 0 0 4px rgba(8,12,30,.6), inset 0 0 24px rgba(0,0,0,.8);}
+  #inset .c{font-size:10px; color:var(--dim); margin-top:6px;}
+
+  /* --- 上部：状態表示 --- */
+  #status{
+    position:fixed; top:12px; left:50%; transform:translateX(-50%); z-index:9;
+    background:var(--panel); border:1px solid var(--line); border-radius:999px;
+    padding:8px 18px; font-size:15px; font-weight:700; letter-spacing:.04em;
+    white-space:nowrap; max-width:min(92vw,560px); overflow:hidden; text-overflow:ellipsis;
+  }
+  #status .star{color:var(--accent);}
+
+  /* --- 下部：操作パネル --- */
+  #controls{
+    position:fixed; left:50%; bottom:calc(12px + env(safe-area-inset-bottom)); transform:translateX(-50%);
+    z-index:10; display:flex; gap:10px; align-items:center; flex-wrap:wrap; justify-content:center;
+    background:var(--panel); border:1px solid var(--line); border-radius:16px;
+    padding:10px 14px; backdrop-filter:blur(4px); -webkit-backdrop-filter:blur(4px);
+    max-width:94vw;
+  }
+  button{
+    font:inherit; font-size:15px; font-weight:700; color:var(--ink);
+    background:rgba(60,80,140,.35); border:1px solid var(--line); border-radius:12px;
+    padding:10px 16px; min-height:44px; cursor:pointer; touch-action:manipulation;
+  }
+  button:active{background:rgba(90,115,190,.5);}
+  #viewBtn{background:rgba(255,209,102,.15); border-color:rgba(255,209,102,.5);}
+  .sp{display:flex; align-items:center; gap:8px; font-size:13px; color:var(--dim);}
+  input[type=range]{width:110px; touch-action:manipulation;}
+
+  #hint{
+    position:fixed; left:12px; bottom:calc(12px + env(safe-area-inset-bottom)); z-index:9;
+    font-size:12px; color:var(--dim); background:var(--panel);
+    border:1px solid var(--line); border-radius:10px; padding:6px 10px;
+    pointer-events:none;
+  }
+  @media (max-width:700px){
+    #phase{width:110px; height:110px;}
+    #status{font-size:13px; top:auto; bottom:calc(84px + env(safe-area-inset-bottom));}
+    #hint{display:none;}
+  }
+</style>
+</head>
+<body>
+<canvas id="main"></canvas>
+
+<div id="inset">
+  <div class="t">地球から見た金星</div>
+  <canvas id="phase"></canvas>
+  <div class="c">形と大きさの変化を表しています</div>
+</div>
+
+<div id="status">…</div>
+
+<div id="controls">
+  <button id="playBtn">⏸ とめる</button>
+  <span class="sp">おそい <input type="range" id="speed" min="0.1" max="3" step="0.1" value="0.8"> はやい</span>
+  <button id="viewBtn">🔭 地上からの視点にする</button>
+  <button id="clearBtn" style="display:none">🧹 記録を消す</button>
+</div>
+
+<div id="hint">💡 金星は指やマウスでドラッグして動かせます</div>
+
+<script>
+(function(){
+"use strict";
+const cv  = document.getElementById('main'),  ctx  = cv.getContext('2d');
+const pcv = document.getElementById('phase'), pctx = pcv.getContext('2d');
+const statusEl = document.getElementById('status');
+const playBtn = document.getElementById('playBtn');
+const viewBtn = document.getElementById('viewBtn');
+const speedEl = document.getElementById('speed');
+const hintEl  = document.getElementById('hint');
+
+// ---------- 状態 ----------
+const R_V = 0.72;               // 金星の軌道半径 [au]（地球=1）
+let theta = Math.PI * 1.12;     // 金星の位置角（画面座標。減少方向＝見た目で反時計回り）
+let playing = true;
+let view = 'top';               // 'top' | 'ground'
+let dragging = false;
+let W = 0, H = 0, dpr = 1;
+let stars = [];
+let last = performance.now();
+
+// ---------- 観察記録(1日=1点) ----------
+const SYNODIC = 584;            // 会合周期 [日]:金星が図を1周する日数
+const SUNDEP  = 6;              // 太陽の伏角[°](日没約30分後/日の出約30分前)
+let simDay = 60;                // 春分から60日後スタート(初夏:宵の明星が高く見える)
+let nextRec = 61;               // 次に記録する日
+let trail = [];                 // {theta, day} の配列
+
+// ---------- 画面サイズ ----------
+function resize(){
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  cv.width = W * dpr; cv.height = H * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const ps = pcv.clientWidth;
+  pcv.width = ps * dpr; pcv.height = ps * dpr;
+  pctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  stars = [];
+  const n = Math.round(W * H / 6000);
+  for (let i = 0; i < n; i++){
+    stars.push({x:Math.random(), y:Math.random(),
+                r:Math.random()*1.3 + 0.3,
+                a:Math.random()*0.6 + 0.25,
+                tw:Math.random()*6.28});
+  }
+}
+window.addEventListener('resize', resize);
+resize();
+
+// ---------- 幾何(画面座標:y は下向き。太陽(0,0)・地球(0,+1)) ----------
+function geometry(th){
+  const v = {x: R_V * Math.cos(th), y: R_V * Math.sin(th)};       // 金星 [au]
+  const e = {x: 0, y: 1};                                         // 地球 [au]
+  const dEV = Math.hypot(v.x - e.x, v.y - e.y);                   // 地球-金星の距離
+  // 位相角 α：金星から見た「太陽方向」と「地球方向」のなす角
+  const ts = {x: -v.x, y: -v.y};
+  const te = {x: e.x - v.x, y: e.y - v.y};
+  const alpha = Math.acos(
+    Math.max(-1, Math.min(1, (ts.x*te.x + ts.y*te.y) /
+      (Math.hypot(ts.x,ts.y) * Math.hypot(te.x,te.y)))));
+  // 離角 ε：地球から見た「太陽」と「金星」のはなれ具合
+  const es = {x: -e.x, y: -e.y};
+  const ev = {x: v.x - e.x, y: v.y - e.y};
+  const elong = Math.acos(
+    Math.max(-1, Math.min(1, (es.x*ev.x + es.y*ev.y) /
+      (Math.hypot(es.x,es.y) * Math.hypot(ev.x,ev.y)))));
+  // 太陽と地球は画面の縦線上 → 金星が左(x<0)なら宵の明星、右なら明けの明星
+  const evening = v.x < 0;
+  const visible = (elong * 180 / Math.PI) > 11;   // 太陽に近すぎると見えない
+  return {v, e, dEV, alpha, elong, evening, visible};
+}
+
+// ---------- 満ち欠けを描く共通関数 ----------
+// alpha: 位相角(0=満月状, π=新月状) / ang: 光っている側の向き(ラジアン, 画面座標)
+function drawPhase(c, R, alpha, ang, lit, dark){
+  c.save();
+  c.rotate(ang);
+  c.beginPath(); c.arc(0, 0, R, 0, Math.PI*2);
+  c.fillStyle = dark; c.fill();
+  const k = Math.cos(alpha);
+  c.beginPath();
+  c.arc(0, 0, R, -Math.PI/2, Math.PI/2, false);                   // 太陽側の半円のふち
+  c.ellipse(0, 0, R*Math.abs(k), R, 0, Math.PI/2, -Math.PI/2, k < 0); // 明暗の境界線
+  c.closePath();
+  c.fillStyle = lit; c.fill();
+  c.restore();
+}
+
+function glow(c, x, y, r, color, alpha){
+  const g = c.createRadialGradient(x, y, 0, x, y, r);
+  g.addColorStop(0, color.replace('A', String(alpha)));
+  g.addColorStop(1, color.replace('A', '0'));
+  c.fillStyle = g;
+  c.beginPath(); c.arc(x, y, r, 0, Math.PI*2); c.fill();
+}
+const YEL = 'rgba(255,205,90,A)', BLU = 'rgba(140,180,255,A)', WHT = 'rgba(255,244,210,A)';
+
+function drawStars(c, yMax, t){
+  for (const s of stars){
+    const y = s.y * H;
+    if (y > yMax) continue;
+    const a = s.a * (0.7 + 0.3 * Math.sin(t/900 + s.tw));
+    c.fillStyle = 'rgba(220,230,255,' + a.toFixed(2) + ')';
+    c.beginPath(); c.arc(s.x * W, y, s.r, 0, Math.PI*2); c.fill();
+  }
+}
+
+// ---------- 上から見た図 ----------
+let hitVenus = null;   // ドラッグ判定用 {x,y,cx,cy}（cx,cy は太陽中心）
+function layoutTop(){
+  const sunX = W/2, sunY = H*0.38;
+  let s = Math.min(H - 130 - sunY, W*0.46);   // 地球までの距離 [px]
+  s = Math.max(s, 120);
+  return {sunX, sunY, s, orbR: s * R_V};
+}
+
+function drawTop(g, t){
+  const {sunX, sunY, s, orbR} = layoutTop();
+  // 背景
+  ctx.fillStyle = '#05070f'; ctx.fillRect(0, 0, W, H);
+  drawStars(ctx, H, t);
+  // 軌道
+  ctx.strokeStyle = 'rgba(160,180,230,.3)'; ctx.lineWidth = 1.5;
+  ctx.setLineDash([6, 7]);
+  ctx.beginPath(); ctx.arc(sunX, sunY, orbR, 0, Math.PI*2); ctx.stroke();
+  ctx.setLineDash([]);
+  // 太陽
+  const sunR = Math.min(40, orbR*0.3);
+  glow(ctx, sunX, sunY, sunR*3.2, YEL, 0.5);
+  ctx.fillStyle = '#ffb52e';
+  ctx.beginPath(); ctx.arc(sunX, sunY, sunR, 0, Math.PI*2); ctx.fill();
+  label('太陽', sunX, sunY + sunR + 20, 16);
+  // 地球（太陽の光が当たる側が明るい）
+  const ex = sunX, ey = sunY + s, eR = 15;
+  glow(ctx, ex, ey, eR*2.6, BLU, 0.35);
+  ctx.save(); ctx.translate(ex, ey);
+  drawPhase(ctx, eR, Math.PI/2, Math.atan2(sunY-ey, sunX-ex), '#9fc7ff', '#1b2c55');
+  ctx.restore();
+  label('地球', ex, ey + eR + 20, 16);
+  // 視線（地球→金星）
+  const vx = sunX + orbR * Math.cos(theta), vy = sunY + orbR * Math.sin(theta);
+  ctx.strokeStyle = 'rgba(230,240,255,.45)'; ctx.lineWidth = 1.2;
+  ctx.setLineDash([3, 6]);
+  ctx.beginPath(); ctx.moveTo(ex, ey); ctx.lineTo(vx, vy); ctx.stroke();
+  ctx.setLineDash([]);
+  // 金星（太陽側の半分だけ光る）
+  const vR = 13;
+  glow(ctx, vx, vy, vR*3.2, WHT, dragging ? 0.7 : 0.45);
+  ctx.save(); ctx.translate(vx, vy);
+  drawPhase(ctx, vR, Math.PI/2, Math.atan2(sunY-vy, sunX-vx), '#fff0c4', '#4a4436');
+  ctx.restore();
+  ctx.strokeStyle = 'rgba(255,255,255,.55)'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.arc(vx, vy, vR + 6, 0, Math.PI*2); ctx.setLineDash([2,4]); ctx.stroke(); ctx.setLineDash([]);
+  label('金星', vx, vy - vR - 12, 15);
+  hitVenus = {x: vx, y: vy, cx: sunX, cy: sunY};
+}
+
+function label(text, x, y, size, color){
+  ctx.font = '700 ' + size + 'px system-ui, "Hiragino Kaku Gothic ProN", sans-serif';
+  ctx.fillStyle = color || 'rgba(235,242,255,.95)';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(text, x, y);
+}
+
+// ---------- 座標変換:黄道座標 → 地平座標(画面ピクセル) ----------
+// 所沢の緯度 35.8°N。基準日=春分(day=0)。日没30分後/日の出30分前を観察時刻とする。
+// 簡略モデル:黄道傾斜 23.4°、円軌道、恒星時は観察時刻から近似的に計算。
+const LAT   = 35.8 * Math.PI / 180;   // 観測地の緯度
+const ECLIP = 23.4 * Math.PI / 180;   // 黄道傾斜角
+
+// day: 春分からの経過日数
+// elong: 離角 [rad]
+// evening: true=宵の明星
+// 戻り値: 画面ピクセル {x, y}、または null(地平線以下)
+function elongToScreen(day, elong, evening, horizon){
+  // --- 太陽の黄経(簡略:1日1°) ---
+  const sunLon = day * (2*Math.PI / 365.25);   // [rad]
+
+  // --- 太陽の赤道座標 ---
+  const sinSunDec = Math.sin(ECLIP) * Math.sin(sunLon);
+  const sunDec    = Math.asin(sinSunDec);
+  const sunRA     = Math.atan2(Math.cos(ECLIP)*Math.sin(sunLon), Math.cos(sunLon));
+
+  // --- 観察時の時角:太陽が地平線下 SUNDEP° のときの太陽時角 ---
+  const sinH = (Math.sin(-SUNDEP*Math.PI/180) - Math.sin(LAT)*Math.sin(sunDec))
+               / (Math.cos(LAT) * Math.cos(sunDec));
+  if (Math.abs(sinH) > 1) return null;     // 白夜/極夜(起きない緯度だが念のため)
+  const sunHA = Math.acos(Math.max(-1, Math.min(1, sinH)));
+  // 日没=西側(時角が正)、日の出=東側(時角が負)
+  const ha_sun = evening ? sunHA : -sunHA;
+  // 恒星時(Local Sidereal Time) = 太陽時角 + 太陽赤経
+  const LST = ha_sun + sunRA;
+
+  // --- 太陽の地平座標(高度 alt、方位 az) ---
+  function toHorizon(ra, dec){
+    const ha  = LST - ra;
+    const sinAlt = Math.sin(LAT)*Math.sin(dec) + Math.cos(LAT)*Math.cos(dec)*Math.cos(ha);
+    const alt = Math.asin(Math.max(-1, Math.min(1, sinAlt)));
+    const cosAz = (Math.sin(dec) - Math.sin(LAT)*sinAlt) / (Math.cos(LAT)*Math.cos(alt));
+    let az = Math.acos(Math.max(-1, Math.min(1, cosAz)));
+    if (Math.sin(ha) > 0) az = 2*Math.PI - az;  // 西半球補正
+    return {alt, az};
+  }
+
+  // --- 太陽の地平高度確認(デバッグ用、ほぼ -SUNDEP° になるはず) ---
+  // const s = toHorizon(sunRA, sunDec);  // s.alt ≈ -SUNDEP°
+
+  // --- 金星の黄経(太陽から elong だけ離れた方向) ---
+  // 宵の明星→太陽の東側(黄経が大きい。太陽を追って沈むので日没後も地平線上に残る)
+  // 明けの明星→太陽の西側(黄経が小さい。太陽より先にのぼる)
+  const venLon = sunLon + (evening ? elong : -elong);
+  // 金星の赤道座標(黄緯 0° 近似)
+  const sinVenDec = Math.sin(ECLIP) * Math.sin(venLon);
+  const venDec    = Math.asin(sinVenDec);
+  const venRA     = Math.atan2(Math.cos(ECLIP)*Math.sin(venLon), Math.cos(venLon));
+
+  const {alt, az} = toHorizon(venRA, venDec);
+  if (alt < 0) return null;   // 地平線の下
+
+  // --- 地平座標 → 画面ピクセル ---
+  // 方位:宵の明星は西(az≈270°=3π/2)中心、明けの明星は東(az≈90°=π/2)中心
+  const pxPerRad = (horizon - H * 0.12) / (50 * Math.PI / 180);  // 50°=画面高さ分
+  const cx = W * 0.5;
+  // 中心方位からのずれを -π〜π に正規化(折り返し防止)
+  let daz = az - (evening ? 1.5*Math.PI : 0.5*Math.PI);
+  while (daz >  Math.PI) daz -= 2*Math.PI;
+  while (daz < -Math.PI) daz += 2*Math.PI;
+  const px = cx + daz * pxPerRad;
+  const py = horizon - alt * pxPerRad;
+  return {x: px, y: py};
+}
+
+// ---------- 地上からの視点(基準:日没30分後/日の出30分前) ----------
+function drawGround(g, t){
+  const evening = g.evening;
+  const horizon = H * 0.72;
+
+  // 空のグラデーション(薄明)
+  const sky = ctx.createLinearGradient(0, 0, 0, horizon);
+  if (evening){ sky.addColorStop(0, '#080d24'); sky.addColorStop(0.5, '#1d2b5c'); sky.addColorStop(0.85, '#8a4b38'); sky.addColorStop(1, '#d07c48'); }
+  else        { sky.addColorStop(0, '#080d24'); sky.addColorStop(0.5, '#1c2e58'); sky.addColorStop(0.85, '#7a5c42'); sky.addColorStop(1, '#d0904f'); }
+  ctx.fillStyle = sky; ctx.fillRect(0, 0, W, horizon);
+  drawStars(ctx, horizon * 0.68, t);
+
+  // 地平線ぎわの残照
+  glow(ctx, W*0.5, horizon, Math.min(W,H)*0.32, YEL, 0.28);
+
+  // 太陽の位置(elong=0として同じ変換式で求める)
+  const sunP = elongToScreen(simDay, 0, evening, horizon) || {x: W*0.5, y: horizon + 40};
+
+  // 黄道の通り道(点線):太陽から離角0〜58°まで数点をたどって結ぶ
+  ctx.strokeStyle = 'rgba(255,230,180,.28)'; ctx.lineWidth = 1;
+  ctx.setLineDash([4, 8]);
+  ctx.beginPath();
+  let started = false;
+  for (let d = 0; d <= 58; d += 2){
+    const pp = elongToScreen(simDay, d * Math.PI/180, evening, horizon);
+    if (!pp) continue;
+    if (!started){ ctx.moveTo(pp.x, pp.y); started = true; }
+    else ctx.lineTo(pp.x, pp.y);
+  }
+  ctx.stroke(); ctx.setLineDash([]);
+
+  // 観察記録(1日ごとの点)
+  drawTrail(evening, horizon);
+
+  // 今日の金星
+  if (g.visible){
+    const p = elongToScreen(simDay, g.elong, evening, horizon);
+    if (p){
+      const litAng = Math.atan2(sunP.y - p.y, sunP.x - p.x);
+      const vR = Math.max(7, Math.min(30, 9 / g.dEV));
+      glow(ctx, p.x, p.y, vR*3.5, WHT, 0.55);
+      ctx.save(); ctx.translate(p.x, p.y);
+      drawPhase(ctx, vR, g.alpha, litAng, '#fff3cd', '#3c3a4a');
+      ctx.restore();
+    }
+  }
+
+  // 太陽(地平線の下、点線で示す)
+  const sunR = Math.min(26, H*0.036);
+  ctx.setLineDash([5, 5]); ctx.strokeStyle = 'rgba(255,190,90,.65)'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(sunP.x, sunP.y, sunR, 0, Math.PI*2); ctx.stroke();
+  ctx.setLineDash([]);
+  glow(ctx, sunP.x, sunP.y, sunR*2.6, YEL, 0.35);
+
+  // 地面(丘のシルエット)
+  ctx.fillStyle = '#0c101c';
+  ctx.beginPath();
+  ctx.moveTo(0, horizon);
+  ctx.quadraticCurveTo(W*0.22, horizon - H*0.035, W*0.45, horizon);
+  ctx.quadraticCurveTo(W*0.72, horizon - H*0.05, W, horizon - H*0.012);
+  ctx.lineTo(W, H); ctx.lineTo(0, H); ctx.closePath(); ctx.fill();
+
+  // 見出しと方角
+  const headY = Math.max(46, H*0.07);
+  label(evening ? '夕方(日没30分後)の西の空' : '明け方(日の出30分前)の東の空',
+        W/2, headY, Math.min(22, W*0.035), '#ffffff');
+  label('観察記録:' + trail.length + '日分', W/2, headY + 26, 13, 'rgba(200,215,245,.85)');
+  const dy = horizon + Math.min(50, (H - horizon)*0.34);
+  label(evening ? '西' : '東', W/2, dy, 24, '#ffd166');
+  label(evening ? '南' : '北', W*0.12, dy, 17, 'rgba(220,230,255,.8)');
+  label(evening ? '北' : '南', W*0.88, dy, 17, 'rgba(220,230,255,.8)');
+
+  // 見えないとき
+  if (!g.visible){
+    ctx.fillStyle = 'rgba(6,9,20,.78)';
+    const bw = Math.min(W*0.86, 480), bh = 96, bx = (W-bw)/2, by = H*0.3;
+    roundRect(ctx, bx, by, bw, bh, 14); ctx.fill();
+    ctx.strokeStyle = 'rgba(160,180,230,.4)'; ctx.stroke();
+    label('いまの位置では、金星は太陽と同じ方向にあるため', W/2, by + 34, 15.5, '#fff');
+    label('地球からは見えません(上から見た図で動かしてみよう)', W/2, by + 62, 15.5, '#ffd166');
+  }
+
+  drawMiniMap(g);
+}
+
+// ---------- 観察記録の描画 ----------
+// 毎日1点。15日ごとに形の記録をそえ、離角が増→減に転じる日に「折り返し」を示す
+function drawTrail(evening, horizon){
+  let prevD = null, prevP = null, turnDrawn = false;
+  for (let i = 0; i < trail.length; i++){
+    const rec = trail[i];
+    const gg  = geometry(rec.theta);
+    if (gg.evening !== evening){ prevD = null; prevP = null; continue; }
+    const d = gg.elong * 180 / Math.PI;
+    if (d <= SUNDEP + 1){ prevD = d; prevP = null; continue; }
+
+    const p = elongToScreen(rec.day, gg.elong, evening, horizon);
+    if (!p){ prevD = d; prevP = null; continue; }
+
+    const rising = (prevD === null) ? true : (d >= prevD);
+
+    // 折り返し(最大離角):離角が増加から減少に転じた最初の点
+    if (!turnDrawn && prevD !== null && d < prevD && prevP && i >= 2){
+      ctx.strokeStyle = 'rgba(255,209,102,.9)'; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(prevP.x, prevP.y, 9, 0, Math.PI*2); ctx.stroke();
+      label('折り返し', prevP.x, prevP.y - 20, 11.5, 'rgba(255,214,120,.95)');
+      turnDrawn = true;
+    }
+
+    // 1日1点
+    const age = simDay - rec.day;
+    const a   = Math.max(0.25, 1 - age / 260);
+    ctx.fillStyle = 'rgba(255,240,200,' + (a * 0.85).toFixed(2) + ')';
+    ctx.beginPath(); ctx.arc(p.x, p.y, 2.4, 0, Math.PI*2); ctx.fill();
+
+    // 15日ごとに形を横に添える
+    if (rec.day % 15 === 0){
+      // 進行方向に垂直な向き(前の点→今の点のベクトルから)
+      let px2 = 0, py2 = 1;
+      if (prevP){ const dx=p.x-prevP.x, dy=p.y-prevP.y, len=Math.hypot(dx,dy)||1; px2=dx/len; py2=dy/len; }
+      const perp = rising ? {x:-py2, y:px2} : {x:py2, y:-px2};
+      const off  = 32;
+      const gx = p.x + perp.x * off, gy = p.y + perp.y * off;
+      ctx.strokeStyle = 'rgba(220,230,255,.25)'; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(gx, gy); ctx.stroke();
+      const gR    = Math.max(4.5, Math.min(11, 4.2 / gg.dEV));
+      const sunPd = elongToScreen(rec.day, 0, evening, horizon) || {x: gx, y: gy - 40};
+      const litAng = Math.atan2(sunPd.y - gy, sunPd.x - gx);
+      ctx.save(); ctx.translate(gx, gy);
+      drawPhase(ctx, gR, gg.alpha, litAng, 'rgba(255,243,205,.95)', 'rgba(60,58,74,.9)');
+      ctx.restore();
+      label(rec.day + '日', gx, gy + gR + 11, 10, 'rgba(200,215,245,.85)');
+    }
+    prevD = d; prevP = p;
+  }
+}
+
+function roundRect(c, x, y, w, h, r){
+  c.beginPath();
+  c.moveTo(x+r, y);
+  c.arcTo(x+w, y, x+w, y+h, r); c.arcTo(x+w, y+h, x, y+h, r);
+  c.arcTo(x, y+h, x, y, r);     c.arcTo(x, y, x+w, y, r);
+  c.closePath();
+}
+
+// ---------- 観測者視点のミニ地図（ここでも金星を動かせる） ----------
+function drawMiniMap(g){
+  const m = Math.max(160, Math.min(240, Math.min(W, H)*0.34));
+  const mx = W - m - 12, my = H - m - 12 - 62;
+  ctx.fillStyle = 'rgba(8,12,30,.85)';
+  roundRect(ctx, mx, my, m, m, 14); ctx.fill();
+  ctx.strokeStyle = 'rgba(150,170,220,.4)'; ctx.lineWidth = 1; ctx.stroke();
+  label('上から見た図（動かせます）', mx + m/2, my + 14, 11, 'rgba(200,215,245,.9)');
+
+  const cx = mx + m/2, cy = my + m*0.44, orbR = m*0.24, s = orbR / R_V;
+  ctx.strokeStyle = 'rgba(160,180,230,.35)';
+  ctx.setLineDash([4,5]);
+  ctx.beginPath(); ctx.arc(cx, cy, orbR, 0, Math.PI*2); ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.fillStyle = '#ffb52e';
+  ctx.beginPath(); ctx.arc(cx, cy, 9, 0, Math.PI*2); ctx.fill();
+  const ex = cx, ey = cy + s;
+  ctx.fillStyle = '#7fb3ff';
+  ctx.beginPath(); ctx.arc(ex, ey, 6, 0, Math.PI*2); ctx.fill();
+  label('地球', ex + 24, ey, 10, 'rgba(200,215,245,.9)');
+  const vx = cx + orbR*Math.cos(theta), vy = cy + orbR*Math.sin(theta);
+  ctx.setLineDash([2,4]); ctx.strokeStyle = 'rgba(230,240,255,.4)';
+  ctx.beginPath(); ctx.moveTo(ex, ey); ctx.lineTo(vx, vy); ctx.stroke();
+  ctx.setLineDash([]);
+  glow(ctx, vx, vy, 20, WHT, 0.5);
+  ctx.fillStyle = '#fff0c4';
+  ctx.beginPath(); ctx.arc(vx, vy, 7, 0, Math.PI*2); ctx.fill();
+  hitVenus = {x: vx, y: vy, cx, cy};
+}
+
+// ---------- 左上ののぞき窓 ----------
+function drawInset(g){
+  const s = pcv.clientWidth, c = pctx;
+  c.clearRect(0, 0, s, s);
+  const R = Math.max(6, Math.min(s*0.42, s*0.115 / g.dEV));  // 距離に反比例して大きく
+  const tilt = 25 * Math.PI / 180;
+  const litAng = g.evening ? Math.atan2(Math.cos(tilt),  Math.sin(tilt))
+                           : Math.atan2(Math.cos(tilt), -Math.sin(tilt));
+  c.save(); c.translate(s/2, s/2);
+  const gl = c.createRadialGradient(0, 0, R*0.5, 0, 0, R*2.2);
+  gl.addColorStop(0, 'rgba(255,240,200,.35)'); gl.addColorStop(1, 'rgba(255,240,200,0)');
+  c.fillStyle = gl; c.beginPath(); c.arc(0, 0, R*2.2, 0, Math.PI*2); c.fill();
+  drawPhase(c, R, g.alpha, litAng, '#fff3cd', '#2c2f3c');
+  c.restore();
+}
+
+// ---------- 状態テキスト ----------
+function updateStatus(g){
+  let html;
+  if (!g.visible){
+    const inner = g.dEV < 1;
+    html = '太陽の方向にあるため <span class="star">見えない</span>（' +
+           (inner ? '地球にいちばん近い' : '地球からいちばん遠い') + '）';
+  } else if (g.evening){
+    html = '<span class="star">宵の明星</span>｜日没30分後、西の空に見える';
+  } else {
+    html = '<span class="star">明けの明星</span>｜日の出30分前、東の空に見える';
+  }
+  statusEl.innerHTML = html;
+}
+
+// ---------- メインループ ----------
+function frame(t){
+  const dt = Math.min(0.05, (t - last)/1000); last = t;
+  if (playing && !dragging){
+    const dth = 0.42 * parseFloat(speedEl.value) * dt;
+    theta -= dth;                                   // 見た目で反時計回り
+    simDay += dth / (2*Math.PI) * SYNODIC;          // 1周 = 会合周期(約584日)
+    while (simDay >= nextRec){                      // 1日ごとに観察を記録
+      trail.push({theta: theta, day: nextRec});
+      nextRec++;
+    }
+    if (trail.length > 600) trail.splice(0, trail.length - 600);
+  }
+  const g = geometry(theta);
+  if (view === 'top') drawTop(g, t); else drawGround(g, t);
+  drawInset(g);
+  updateStatus(g);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+// ---------- 操作 ----------
+playBtn.addEventListener('click', () => {
+  playing = !playing;
+  playBtn.textContent = playing ? '⏸ とめる' : '▶ うごかす';
+});
+const clearBtn = document.getElementById('clearBtn');
+viewBtn.addEventListener('click', () => {
+  view = (view === 'top') ? 'ground' : 'top';
+  viewBtn.textContent = (view === 'top') ? '🔭 地上からの視点にする' : '🪐 上から見た図にする';
+  clearBtn.style.display = (view === 'ground') ? '' : 'none';
+  hintEl.textContent = (view === 'top')
+    ? '💡 金星は指やマウスでドラッグして動かせます'
+    : '💡 再生すると1日1回の観察記録がたまっていきます';
+});
+clearBtn.addEventListener('click', () => { trail = []; simDay = 60; nextRec = 61; });
+
+cv.addEventListener('pointerdown', ev => {
+  if (!hitVenus) return;
+  const r = Math.hypot(ev.clientX - hitVenus.x, ev.clientY - hitVenus.y);
+  if (r < 42){
+    dragging = true;
+    trail = []; simDay = 60; nextRec = 61;  // 手で動かしたら観察はやり直し
+    cv.setPointerCapture(ev.pointerId);
+    moveVenus(ev);
+  }
+});
+cv.addEventListener('pointermove', ev => { if (dragging) moveVenus(ev); });
+cv.addEventListener('pointerup',   () => { dragging = false; });
+cv.addEventListener('pointercancel', () => { dragging = false; });
+function moveVenus(ev){
+  theta = Math.atan2(ev.clientY - hitVenus.cy, ev.clientX - hitVenus.cx);
+}
+})();
+</script>
+</body>
+</html>
