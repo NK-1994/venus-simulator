@@ -325,8 +325,9 @@ const ECLIP = 23.4 * Math.PI / 180;   // 黄道傾斜角
 // day: 春分からの経過日数
 // elong: 離角 [rad]
 // evening: true=宵の明星
-// 戻り値: 画面ピクセル {x, y}、または null(地平線以下)
-function elongToScreen(day, elong, evening, horizon){
+// allowBelow: trueなら地平線より下でも座標を返す(太陽自身の位置取得用)
+// 戻り値: 画面ピクセル {x, y}、または null(地平線以下 かつ allowBelow=false)
+function elongToScreen(day, elong, evening, horizon, allowBelow){
   // --- 太陽の黄経(簡略:1日1°) ---
   const sunLon = day * (2*Math.PI / 365.25);   // [rad]
 
@@ -356,9 +357,6 @@ function elongToScreen(day, elong, evening, horizon){
     return {alt, az};
   }
 
-  // --- 太陽の地平高度確認(デバッグ用、ほぼ -SUNDEP° になるはず) ---
-  // const s = toHorizon(sunRA, sunDec);  // s.alt ≈ -SUNDEP°
-
   // --- 金星の黄経(太陽から elong だけ離れた方向) ---
   // 宵の明星→太陽の東側(黄経が大きい。太陽を追って沈むので日没後も地平線上に残る)
   // 明けの明星→太陽の西側(黄経が小さい。太陽より先にのぼる)
@@ -369,7 +367,7 @@ function elongToScreen(day, elong, evening, horizon){
   const venRA     = Math.atan2(Math.cos(ECLIP)*Math.sin(venLon), Math.cos(venLon));
 
   const {alt, az} = toHorizon(venRA, venDec);
-  if (alt < 0) return null;   // 地平線の下
+  if (alt < 0 && !allowBelow) return null;   // 地平線の下
 
   // --- 地平座標 → 画面ピクセル ---
   // 方位:宵の明星は西(az≈270°=3π/2)中心、明けの明星は東(az≈90°=π/2)中心
@@ -400,7 +398,7 @@ function drawGround(g, t){
   glow(ctx, W*0.5, horizon, Math.min(W,H)*0.32, YEL, 0.28);
 
   // 太陽の位置(elong=0として同じ変換式で求める)
-  const sunP = elongToScreen(simDay, 0, evening, horizon) || {x: W*0.5, y: horizon + 40};
+  const sunP = elongToScreen(simDay, 0, evening, horizon, true) || {x: W*0.5, y: horizon + 40};
 
   // 黄道の通り道(点線):太陽から離角0〜58°まで数点をたどって結ぶ
   ctx.strokeStyle = 'rgba(255,230,180,.28)'; ctx.lineWidth = 1;
@@ -422,7 +420,7 @@ function drawGround(g, t){
   if (g.visible){
     const p = elongToScreen(simDay, g.elong, evening, horizon);
     if (p){
-      const litAng = Math.atan2(sunP.y - p.y, sunP.x - p.x);
+      const litAng = evening ? 0 : Math.PI;
       const vR = Math.max(7, Math.min(30, 9 / g.dEV));
       glow(ctx, p.x, p.y, vR*3.5, WHT, 0.55);
       ctx.save(); ctx.translate(p.x, p.y);
@@ -510,8 +508,7 @@ function drawTrail(evening, horizon){
       ctx.strokeStyle = 'rgba(220,230,255,.25)'; ctx.lineWidth = 1;
       ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(gx, gy); ctx.stroke();
       const gR    = Math.max(4.5, Math.min(11, 4.2 / gg.dEV));
-      const sunPd = elongToScreen(rec.day, 0, evening, horizon) || {x: gx, y: gy - 40};
-      const litAng = Math.atan2(sunPd.y - gy, sunPd.x - gx);
+      const litAng = evening ? 0 : Math.PI;
       ctx.save(); ctx.translate(gx, gy);
       drawPhase(ctx, gR, gg.alpha, litAng, 'rgba(255,243,205,.95)', 'rgba(60,58,74,.9)');
       ctx.restore();
@@ -568,9 +565,8 @@ function drawInset(g){
   const s = pcv.clientWidth, c = pctx;
   c.clearRect(0, 0, s, s);
   const R = Math.max(6, Math.min(s*0.42, s*0.115 / g.dEV));  // 距離に反比例して大きく
-  const tilt = 25 * Math.PI / 180;
-  const litAng = g.evening ? Math.atan2(Math.cos(tilt),  Math.sin(tilt))
-                           : Math.atan2(Math.cos(tilt), -Math.sin(tilt));
+  // 傾けず、常に右か左のどちらかが欠けて見えるようにする(宵の明星=右が光る、明けの明星=左が光る)
+  const litAng = g.evening ? 0 : Math.PI;
   c.save(); c.translate(s/2, s/2);
   const gl = c.createRadialGradient(0, 0, R*0.5, 0, 0, R*2.2);
   gl.addColorStop(0, 'rgba(255,240,200,.35)'); gl.addColorStop(1, 'rgba(255,240,200,0)');
