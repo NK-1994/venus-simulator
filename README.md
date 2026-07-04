@@ -74,27 +74,6 @@ https://nk-1994.github.io/venus-simulator/
 - **Branch**：`main` / `/ (root)`
 - 公開ページのエントリーファイルは `index.html`（GitHub Pagesが既定で探すファイル名）
 
-### 更新時の反映について
-
-`index.html` を更新してコミットすると、自動的に再デプロイされます。
-反映まで数分かかることがあるので、変更が見えないときはブラウザの再読み込み
-（キャッシュが強い場合はシークレットウィンドウでの確認）を試してください。
-
-### デプロイが失敗する場合
-
-**Settings → Actions**（または画面下部のコミットステータス）に赤い✕が出た場合は、
-まず **Actions タブ** を開き、失敗した実行のログを確認してください。
-
-- `Error: Deployment failed, try again later.` というメッセージが出ている場合、
-  多くはコード側の問題ではなく **GitHub Pages側の一時的な不調** です。
-  該当の実行を開き「Re-run failed jobs」で再実行すると、それだけで解決することが
-  よくあります。
-- 何度か再実行しても直らない場合は、Settings → Pages で Source を一度 `None` に
-  戻して保存し、再度 `Deploy from a branch` / `main` / `root` に設定し直すと
-  改善することがあります。
-- リポジトリ内に古いファイル（例：以前使っていた `venus-simulator.html`）が
-  残っていないか、ファイル一覧で確認してください。
-
 ## ファイル構成
 
 ```
